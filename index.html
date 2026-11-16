@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#faf8f4">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Stock Check">
+<title>CK Stock Check</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+<style>
+  html,body{margin:0;background:#faf8f4;color:#161514;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Helvetica Neue",Roboto,Arial,sans-serif}
+  .w{max-width:520px;margin:0 auto;padding:28px 20px}
+  .b{font-size:9.5px;letter-spacing:.3em;color:#8a847c;display:flex;justify-content:space-between}
+  .m{margin-top:40px;font-size:14px;color:#8a847c}
+  .m.bad{color:#8f2f36}
+  .sp{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:r .7s linear infinite;vertical-align:-2px;margin-right:8px}
+  @keyframes r{to{transform:rotate(360deg)}}
+  input{width:100%;box-sizing:border-box;height:52px;border:0;border-radius:12px;background:#f3efe9;padding:0 14px;font-size:14px;margin-top:12px}
+  button{width:100%;height:52px;border:0;border-radius:12px;background:#161514;color:#fff;font-size:12px;letter-spacing:.2em;margin-top:10px}
+</style>
+</head>
+<body>
+<div class="w"><div class="b"><span>CALVIN KLEIN</span><span>SARATH CITY</span></div><div id="m" class="m"><span class="sp"></span>Opening Stock Check…</div></div>
+<script>
+/*
+ * CK Stock Check · LIVE SCAN page (hosted outside Apps Script so the camera can read barcodes live)
+ * v1.1 · 16 Nov 2026 · opens with no signal (sw.js) · Add to Home Screen icon
+ *
+ * This small page loads the app itself (your Index.html) from the Apps Script backend, so:
+ *  · any change you make to Index.html shows up here too — nothing to re-upload
+ *  · the PIN, stock list and Pan-India data come from the same backend as the team's link
+ *  · the app is kept on the phone, so it opens instantly next time (and the newest version is fetched in the background)
+ *
+ * ONE thing to fill in: the /exec link of your TEST deployment (Deploy → Manage deployments).
+ */
+var API = 'https://script.google.com/macros/s/AKfycbxnplLqOkkOMAgtFl-e8nDNPk-ci0Y30cPqDPF0RHCkgVhCDeDHqf37BbMBrBm8c9dH/exec';
+
+(function () {
+  var PAGE_KEY = 'ck_live_page', API_KEY = 'ck_live_api', TIMEOUT = 45000;
+  var m = document.getElementById('m');
+  function ls(k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { return null; } }
+  if (!/^https:\/\/script\.google\.com\//.test(API)) API = ls(API_KEY) || '';
+  // offline helper: keeps this page, the barcode reader and the font on the phone (no stock data in it)
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) { try { navigator.serviceWorker.register('sw.js').catch(function () {}); } catch (e) {} }
+
+  // ---------- one call to the backend (same shape as google.script.run)
+  function call(fn, args) {
+    var ctl = window.AbortController ? new AbortController() : null, t = ctl ? setTimeout(function () { ctl.abort(); }, TIMEOUT) : 0;
+    return fetch(API, { method: 'POST', body: JSON.stringify({ fn: fn, args: args || [] }), headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow', signal: ctl ? ctl.signal : undefined })
+      .then(function (r) { clearTimeout(t); if (!r.ok) throw new Error('Server ' + r.status); return r.json(); })
+      .then(function (j) { if (!j || !j.ok) throw new Error((j && j.error) || 'No answer'); return j; },
+            function (e) { clearTimeout(t); throw (e && e.name === 'AbortError') ? new Error('No answer in 45 s — check the connection') : e; });
+  }
+  // google.script.run stand-in: .withSuccessHandler(ok).withFailureHandler(fail).anyFunction(args…)
+  function runner(ok, fail) {
+    return new Proxy({}, { get: function (_, k) {
+      if (k === 'withSuccessHandler') return function (f) { return runner(f, fail); };
+      if (k === 'withFailureHandler') return function (f) { return runner(ok, f); };
+      if (k === 'withUserObject') return function () { return runner(ok, fail); };
+      return function () {
+        var a = Array.prototype.slice.call(arguments);
+        call(String(k), a).then(function (j) { if (ok) ok(j.result); }, function (e) { if (fail) fail(e); });
+      };
+    } });
+  }
+  window.google = { script: { run: runner(null, null), host: { close: function () {} } } };
+  window.__ckLive = { call: call };
+
+  // ---------- show the app
+  function render(html) {
+    // the stand-in must exist inside the app's own document too
+    var shim = '<script>window.google=window.parent===window&&window.__ckG?window.__ckG:window.google;<\/script>';
+    window.__ckG = window.google;
+    html = html.replace(/<head>/i, '<head><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">' + shim);
+    document.open(); document.write(html); document.close();
+    if (!window.google || !window.google.script) window.google = window.__ckG;
+  }
+  function setup(msg) {
+    m.className = 'm';
+    m.innerHTML = (msg ? '<div class="m bad" style="margin:0 0 12px">' + msg + '</div>' : '') + 'Paste the <b>/exec</b> link of the Stock Check test deployment (Apps Script → Deploy → Manage deployments).' +
+      '<input id="u" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"><button id="s">SAVE</button>';
+    document.getElementById('s').onclick = function () {
+      var v = document.getElementById('u').value.trim();
+      if (!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/.test(v)) { setup('That is not an Apps Script /exec link.'); return; }
+      ls(API_KEY, v); API = v; m.innerHTML = '<span class="sp"></span>Opening Stock Check…'; start();
+    };
+  }
+  function fetchPage() { return call('page').then(function (j) { return j.html; }); }
+  function start() {
+    if (!API) { setup(''); return; }
+    var cached = ls(PAGE_KEY);
+    if (cached) {
+      // wait until this small page has finished loading, otherwise the app would be added below it instead of replacing it
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { render(cached); }); else render(cached);
+      fetchPage().then(function (h) { if (h && h !== cached) ls(PAGE_KEY, h); }, function () {});   // newest version is used on the next open
+      return;
+    }
+    fetchPage().then(function (h) { ls(PAGE_KEY, h); render(h); }, function (e) {
+      m.className = 'm bad'; m.textContent = 'Could not open Stock Check: ' + (e && e.message || e) + '. Check the connection and reload.';
+    });
+  }
+  start();
+})();
+</script>
+</body>
+</html>
