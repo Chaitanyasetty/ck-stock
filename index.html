@@ -28,6 +28,10 @@
 <script>
 /*
  * CK Stock Check · LIVE SCAN page (hosted outside Apps Script so the camera can read barcodes live)
+ * v1.2 · 17 Nov 2026 · scanner fixes applied here (see SCAN_FIX below) — nothing to change in Apps Script
+ *   1. no more small-box → full-screen jump when the camera opens (the picture fades in once it is full size)
+ *   2. camera asked for once per opening of the app, not again on every SCAN (it stays ready for 5 min, paused)
+ *      + a one-time tip on how to make iPhone stop asking altogether
  * v1.1 · 16 Nov 2026 · opens with no signal (sw.js) · Add to Home Screen icon
  *
  * This small page loads the app itself (your Index.html) from the Apps Script backend, so:
@@ -35,7 +39,7 @@
  *  · the PIN, stock list and Pan-India data come from the same backend as the team's link
  *  · the app is kept on the phone, so it opens instantly next time (and the newest version is fetched in the background)
  *
- * ONE thing to fill in: the /exec link of your TEST deployment (Deploy → Manage deployments).
+ * API below = the /exec link of the "Live scan test" deployment.
  */
 var API = 'https://script.google.com/macros/s/AKfycbxnplLqOkkOMAgtFl-e8nDNPk-ci0Y30cPqDPF0RHCkgVhCDeDHqf37BbMBrBm8c9dH/exec';
 
@@ -70,11 +74,60 @@ var API = 'https://script.google.com/macros/s/AKfycbxnplLqOkkOMAgtFl-e8nDNPk-ci0
   window.google = { script: { run: runner(null, null), host: { close: function () {} } } };
   window.__ckLive = { call: call };
 
+  // ---------- SCAN_FIX · 17 Nov 2026 · small edits to the v4 scanner, made as the app opens.
+  // Each edit looks for an exact line of the scanner; if that line ever changes, the edit is skipped
+  // and the scanner simply works as before (nothing breaks). window.__ckFix lists what was applied.
+  var FIX_CSS = '<style id="ck-scan-fix">' +
+    '.cam-ov video{opacity:0;transition:opacity .18s ease}' +         // picture hidden until it is full size (no small-box jump)
+    '.cam-ov video.on{opacity:1}' +
+    '</style>';
+  var FIXES = [
+    // A · fade the picture in only once the camera is sending full-size frames
+    ['function openLive(){',
+     'function showVid(){ var v = LV.v; if (!v) return; v.classList.remove(\'on\'); var my = LV.vs = (LV.vs || 0) + 1;\n' +
+     '    function go(){ if (my === LV.vs && LV.on) v.classList.add(\'on\'); }\n' +
+     '    function nf(f){ if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(function(){ f(); }); else setTimeout(f, 60); }\n' +
+     '    (function ready(){ if (my !== LV.vs || !LV.on) return; if (v.videoWidth && v.readyState >= 2) nf(function(){ nf(function(){ requestAnimationFrame(go); }); }); else setTimeout(ready, 40); })();\n' +
+     '    setTimeout(go, 1800); }\n' +
+     '  function camTip(){ try { if (!load(\'ck_cam_ok\') || !navigator.permissions || !navigator.permissions.query) return;\n' +
+     '    navigator.permissions.query({ name: \'camera\' }).then(function(p){ if (p && p.state === \'prompt\' && LV.starting) hint(\'Tap Allow. To stop iPhone asking: Settings → Apps → Safari → Camera → Allow\'); }, function(){}); } catch(e){} }\n' +
+     '  function openLive(){'],
+    ['LV.t0 = Date.now(); LV.nErr = 0;', 'LV.t0 = Date.now(); LV.nErr = 0; showVid();'],
+    // B · camera asked for once per opening: X / idle / a good read pause the camera instead of switching it off
+    ['var LIVE_IDLE = 60000, LIVE_WARM = 20000,', 'var LIVE_IDLE = 60000, LIVE_WARM = 300000,'],
+    ["d.querySelector('.cam-x').addEventListener('click', function(){ closeLive(true); });",
+     "d.querySelector('.cam-x').addEventListener('click', function(){ closeLive(false); });"],
+    ['if (LV.on){ closeLive(true); show(', 'if (LV.on){ closeLive(false); show('],
+    ['if (stopNow) stopCam(); else LV.warmT = setTimeout(stopCam, LIVE_WARM);',
+     'if (LV.v) LV.v.classList.remove(\'on\');\n' +
+     '    if (LV.torch){ LV.torch = false; setCam({ torch: false }); var tb0 = LV.el && LV.el.querySelector(\'[data-a=torch]\'); if (tb0) tb0.classList.remove(\'on\'); }\n' +
+     '    if (stopNow) stopCam(); else { try { if (LV.track) LV.track.enabled = false; } catch(e){} LV.warmT = setTimeout(stopCam, LIVE_WARM); }   // paused, not off: next SCAN needs no new permission'],
+    ["if (LV.stream && LV.track && LV.track.readyState === 'live'){ startLoop(); return; }",
+     "if (LV.stream && LV.track && LV.track.readyState === 'live'){ try { LV.track.enabled = true; } catch(e){} startLoop(); return; }"],
+    // C · remember that this phone has allowed the camera once, so the tip shows only to someone who already said yes
+    ['LV.starting = true;\n    var want', 'LV.starting = true; camTip();\n    var want'],
+    ['LV.stream = s; LV.track = s.getVideoTracks()[0];', "LV.stream = s; LV.track = s.getVideoTracks()[0]; store('ck_cam_ok', '1'); hint('Point at the barcode — it reads by itself');"]
+  ];
+  function patch(html) {
+    var done = [], orig = html;
+    if (html.indexOf('function liveAllowed') < 0) return html;          // not the live scanner: leave it alone
+    FIXES.forEach(function (f, i) {
+      var at = html.indexOf(f[0]);
+      if (at < 0 || html.indexOf(f[0], at + 1) >= 0) return;            // missing or not unique: skip this one
+      html = html.slice(0, at) + f[1] + html.slice(at + f[0].length); done.push(i);
+    });
+    // A without its call (or the call without A) would break the scanner: only keep both or neither
+    if ((done.indexOf(0) < 0) !== (done.indexOf(1) < 0)) return orig;    // (cannot happen with today's scanner)
+    window.__ckFix = done;
+    return html.replace(/<\/head>/i, FIX_CSS + '</head>');
+  }
+
   // ---------- show the app
   function render(html) {
     // the stand-in must exist inside the app's own document too
     var shim = '<script>window.google=window.parent===window&&window.__ckG?window.__ckG:window.google;<\/script>';
     window.__ckG = window.google;
+    html = patch(html);
     html = html.replace(/<head>/i, '<head><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">' + shim);
     document.open(); document.write(html); document.close();
     if (!window.google || !window.google.script) window.google = window.__ckG;
